@@ -34,7 +34,7 @@ app.get('/', (req, res) => {
 function extractFromYtdlp(videoUrl) {
   return new Promise((resolve) => {
     console.log(`[yt-dlp] Trying local extraction for: ${videoUrl}`);
-    const ytdlp = spawn('yt-dlp', ['-g', '--no-playlist', videoUrl]);
+    const ytdlp = spawn('yt-dlp', ['-f', 'best[ext=mp4]/best', '-g', '--no-playlist', videoUrl]);
     let output = '';
     let errorOutput = '';
     

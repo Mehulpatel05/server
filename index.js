@@ -63,43 +63,41 @@ function extractFromYtdlp(videoUrl) {
 }
 
 /**
- * Cobalt Instances Extraction Helper
+ * Cobalt Single Instance Extraction Helper
  */
-async function extractFromCobalt(videoUrl) {
+async function extractSingleCobalt(instance, videoUrl) {
   const payload = {
     url: videoUrl,
     videoQuality: '1080',
     downloadMode: 'auto'
   };
 
-  for (const instance of cobaltInstances) {
-    try {
-      console.log(`[Cobalt] Trying extraction from: ${instance}`);
-      const response = await fetch(instance, {
-        method: 'POST',
-        headers: {
-          'Accept': 'application/json',
-          'Content-Type': 'application/json',
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-        },
-        body: JSON.stringify(payload),
-      });
+  try {
+    console.log(`[Cobalt] Concurrently querying: ${instance}`);
+    const response = await fetch(instance, {
+      method: 'POST',
+      headers: {
+        'Accept': 'application/json',
+        'Content-Type': 'application/json',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+      },
+      body: JSON.stringify(payload),
+      // Set a strict 7 second timeout for each fetch to prevent slow instances from hanging the pool
+      signal: AbortSignal.timeout(7000)
+    });
 
-      if (response.ok) {
-        const data = await response.json();
-        if (data && (data.status === 'stream' || data.status === 'redirect') && data.url) {
-          console.log(`[Cobalt] Extraction successful from ${instance}! Direct URL: ${data.url}`);
-          return {
-            videoUrl: data.url,
-            title: data.text || 'VideoSaver Download',
-          };
-        }
-      } else {
-        console.warn(`[Cobalt] Instance ${instance} returned status: ${response.status}`);
+    if (response.ok) {
+      const data = await response.json();
+      if (data && (data.status === 'stream' || data.status === 'redirect') && data.url) {
+        console.log(`[Cobalt] Success from: ${instance}`);
+        return {
+          videoUrl: data.url,
+          title: data.text || 'VideoSaver Download',
+        };
       }
-    } catch (err) {
-      console.warn(`[Cobalt] Instance ${instance} failed: ${err.message}`);
     }
+  } catch (err) {
+    // Fail silently so Promise.any skips this instance
   }
   return null;
 }
@@ -169,18 +167,40 @@ app.post('/', async (req, res) => {
     return res.status(400).json({ error: 'URL is required' });
   }
 
-  console.log(`[POST /] Extracting real link for: ${url} (Mode: ${downloadMode || 'auto'})`);
+  console.log(`[POST /] Starting fast parallel extraction for: ${url}`);
 
   const protocol = req.headers['x-forwarded-proto'] || req.protocol;
   const host = req.get('host');
   const isAudio = downloadMode === 'audio';
 
-  // 1. Try local yt-dlp first (fastest for YouTube/TikTok/etc. on open IPs)
-  let result = await extractFromYtdlp(url);
+  // Build list of promises to run in parallel
+  const extractionPromises = [];
 
-  // 2. Fall back to public Cobalt instances (best for Instagram/Facebook/Twitter Turnstile bypasses)
-  if (!result) {
-    result = await extractFromCobalt(url);
+  // 1. Add local yt-dlp promise
+  extractionPromises.push(
+    extractFromYtdlp(url).then(res => {
+      if (res) return res;
+      throw new Error('Local yt-dlp failed');
+    })
+  );
+
+  // 2. Add Cobalt instance promises
+  for (const instance of cobaltInstances) {
+    extractionPromises.push(
+      extractSingleCobalt(instance, url).then(res => {
+        if (res) return res;
+        throw new Error(`Cobalt ${instance} failed`);
+      })
+    );
+  }
+
+  let result = null;
+  try {
+    // Wait for the fastest method to resolve successfully
+    result = await Promise.any(extractionPromises);
+    console.log(`[POST /] Fast extraction finished! Title: ${result.title}`);
+  } catch (e) {
+    console.warn('[POST /] All extraction methods failed concurrently.');
   }
 
   let downloadUrl = '';
@@ -189,7 +209,7 @@ app.post('/', async (req, res) => {
     downloadUrl = `${protocol}://${host}/api/download?streamUrl=${encodeURIComponent(result.videoUrl)}&title=${encodeURIComponent(result.title)}&format=${isAudio ? 'mp3' : 'mp4'}`;
   } else {
     // Fall back to simulation only if all extraction routines failed
-    console.warn(`[POST /] All extraction failed. Setting fallback simulation URL.`);
+    console.warn(`[POST /] Using fallback simulation URL.`);
     const fallbackUrl = isAudio ? 'https://www.w3schools.com/html/horse.mp3' : 'https://www.w3schools.com/html/mov_bbb.mp4';
     downloadUrl = `${protocol}://${host}/api/download?streamUrl=${encodeURIComponent(fallbackUrl)}&title=Simulation_Fallback&format=${isAudio ? 'mp3' : 'mp4'}`;
   }

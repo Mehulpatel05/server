@@ -272,6 +272,94 @@ async function extractPinterestDirect(pinterestUrl) {
 }
 
 /**
+ * Custom Diskwala Direct Scraper
+ */
+async function extractDiskwalaDirect(diskwalaUrl) {
+  try {
+    console.log(`[Diskwala Scraper] Fetching page: ${diskwalaUrl}`);
+    const response = await fetch(diskwalaUrl, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8'
+      },
+      redirect: 'follow',
+      signal: AbortSignal.timeout(8000)
+    });
+
+    if (!response.ok) {
+      console.warn(`[Diskwala Scraper] Fetch failed: ${response.status}`);
+      return null;
+    }
+
+    const html = await response.text();
+
+    // Look for video tag or player source variables (like .mp4 or .m3u8)
+    const srcMatch = html.match(/(?:src|source|file|url)\s*:\s*["'](https?:\/\/[^"']+\.(?:mp4|m3u8|mkv)[^"']*)["']/) ||
+                     html.match(/<video[^>]*src=["'](https?:\/\/[^"']+)["']/);
+
+    if (srcMatch && srcMatch[1]) {
+      const directUrl = srcMatch[1].replace(/&amp;/g, '&');
+      console.log(`[Diskwala Scraper] Found Link: ${directUrl}`);
+      return {
+        videoUrl: directUrl,
+        title: 'Diskwala_Video',
+        format: directUrl.includes('.m3u8') ? 'm3u8' : 'mp4'
+      };
+    }
+  } catch (e) {
+    console.error(`[Diskwala Scraper] Error: ${e.message}`);
+  }
+  return null;
+}
+
+/**
+ * Custom Terabox Direct Scraper
+ */
+async function extractTeraboxDirect(teraboxUrl) {
+  // 1. Try local yt-dlp first
+  const localRes = await extractFromYtdlp(teraboxUrl);
+  if (localRes) {
+    return {
+      videoUrl: localRes.videoUrl,
+      title: localRes.title,
+      format: 'mp4'
+    };
+  }
+
+  // 2. Try public APIs
+  const teraboxApis = [
+    `https://terabox-api.extraj.in/api?url=${encodeURIComponent(teraboxUrl)}`,
+    `https://terabox.apis.ry.vc/api?url=${encodeURIComponent(teraboxUrl)}`
+  ];
+
+  for (const api of teraboxApis) {
+    try {
+      console.log(`[Terabox] Querying public API: ${api}`);
+      const response = await fetch(api, { signal: AbortSignal.timeout(7000) });
+      if (response.ok) {
+        const json = await response.json();
+        if (json.status && json.download_link) {
+          return {
+            videoUrl: json.download_link,
+            title: json.title || 'Terabox_Download',
+            format: 'mp4'
+          };
+        } else if (json.url) {
+          return {
+            videoUrl: json.url,
+            title: json.title || 'Terabox_Download',
+            format: 'mp4'
+          };
+        }
+      }
+    } catch (e) {
+      console.warn(`[Terabox API failed] ${api}: ${e.message}`);
+    }
+  }
+  return null;
+}
+
+/**
  * Cobalt API Compatibility Endpoint
  * POST /
  */
@@ -294,6 +382,32 @@ app.post('/', async (req, res) => {
     const pinResult = await extractPinterestDirect(url);
     if (pinResult) {
       const downloadUrl = `${protocol}://${host}/api/download?streamUrl=${encodeURIComponent(pinResult.videoUrl)}&title=${encodeURIComponent(pinResult.title)}&format=${pinResult.format}`;
+      return res.json({
+        status: 'stream',
+        url: downloadUrl
+      });
+    }
+  }
+
+  // Fast path for Diskwala (bypasses parallel Cobalt pool entirely)
+  const isDiskwala = url.toLowerCase().includes('diskwala') || url.toLowerCase().includes('playdiskwala') || url.toLowerCase().includes('thediskwala');
+  if (isDiskwala) {
+    const diskwalaResult = await extractDiskwalaDirect(url);
+    if (diskwalaResult) {
+      const downloadUrl = `${protocol}://${host}/api/download?streamUrl=${encodeURIComponent(diskwalaResult.videoUrl)}&title=${encodeURIComponent(diskwalaResult.title)}&format=${diskwalaResult.format}`;
+      return res.json({
+        status: 'stream',
+        url: downloadUrl
+      });
+    }
+  }
+
+  // Fast path for Terabox (bypasses parallel Cobalt pool entirely)
+  const isTerabox = url.toLowerCase().includes('terabox') || url.toLowerCase().includes('nephobox') || url.toLowerCase().includes('dubox') || url.toLowerCase().includes('playedu') || url.toLowerCase().includes('teraboxlink');
+  if (isTerabox) {
+    const teraboxResult = await extractTeraboxDirect(url);
+    if (teraboxResult) {
+      const downloadUrl = `${protocol}://${host}/api/download?streamUrl=${encodeURIComponent(teraboxResult.videoUrl)}&title=${encodeURIComponent(teraboxResult.title)}&format=${teraboxResult.format}`;
       return res.json({
         status: 'stream',
         url: downloadUrl

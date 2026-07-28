@@ -157,6 +157,60 @@ function streamFromUrl(targetUrl, res, redirectCount = 0) {
 }
 
 /**
+ * Custom Pinterest Direct Scraper (Bypasses yt-dlp & Cobalt for fast video & image pin extraction)
+ */
+async function extractPinterestDirect(pinterestUrl) {
+  try {
+    console.log(`[Pinterest Scraper] Fetching page: ${pinterestUrl}`);
+    const response = await fetch(pinterestUrl, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8'
+      },
+      redirect: 'follow'
+    });
+
+    if (!response.ok) {
+      console.warn(`[Pinterest Scraper] Fetch failed: ${response.status}`);
+      return null;
+    }
+
+    const html = await response.text();
+
+    // 1. Check for video pin first
+    const videoMatch = html.match(/<meta[^>]*property=["']og:video["'][^>]*content=["'](.*?)["']/) ||
+                       html.match(/<meta[^>]*property=["']og:video:secure_url["'][^>]*content=["'](.*?)["']/);
+    
+    if (videoMatch && videoMatch[1]) {
+      const directVideoUrl = videoMatch[1].replace(/&amp;/g, '&');
+      console.log(`[Pinterest Scraper] Found Video Link: ${directVideoUrl}`);
+      return {
+        videoUrl: directVideoUrl,
+        title: 'Pinterest_Video',
+        format: 'mp4'
+      };
+    }
+
+    // 2. Check for image pin
+    const imageMatch = html.match(/<meta[^>]*property=["']og:image["'][^>]*content=["'](.*?)["']/) ||
+                       html.match(/<meta[^>]*property=["']twitter:image["'][^>]*content=["'](.*?)["']/);
+
+    if (imageMatch && imageMatch[1]) {
+      const directImageUrl = imageMatch[1].replace(/&amp;/g, '&');
+      console.log(`[Pinterest Scraper] Found Image Link: ${directImageUrl}`);
+      return {
+        videoUrl: directImageUrl,
+        title: 'Pinterest_Image',
+        format: 'jpg'
+      };
+    }
+  } catch (e) {
+    console.error(`[Pinterest Scraper] Error: ${e.message}`);
+  }
+  return null;
+}
+
+/**
  * Cobalt API Compatibility Endpoint
  * POST /
  */
@@ -172,6 +226,19 @@ app.post('/', async (req, res) => {
   const protocol = req.headers['x-forwarded-proto'] || req.protocol;
   const host = req.get('host');
   const isAudio = downloadMode === 'audio';
+
+  // Fast path for Pinterest (bypasses parallel Cobalt pool entirely)
+  const isPinterest = url.toLowerCase().includes('pinterest.com') || url.toLowerCase().includes('pin.it');
+  if (isPinterest) {
+    const pinResult = await extractPinterestDirect(url);
+    if (pinResult) {
+      const downloadUrl = `${protocol}://${host}/api/download?streamUrl=${encodeURIComponent(pinResult.videoUrl)}&title=${encodeURIComponent(pinResult.title)}&format=${pinResult.format}`;
+      return res.json({
+        status: 'stream',
+        url: downloadUrl
+      });
+    }
+  }
 
   // Build list of promises to run in parallel
   const extractionPromises = [];

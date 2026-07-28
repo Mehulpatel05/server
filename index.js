@@ -11,12 +11,73 @@ const PORT = process.env.PORT || 8080;
 app.use(cors());
 app.use(express.json());
 
-// List of public Cobalt instances to try in sequence for extracting URLs
-const cobaltInstances = [
-  'https://cobalt.api.ry.vc/',
-  'https://co.wuk.sh/',
-  'https://cobalt.sh/',
+// Caching variables for cobalt.directory API response
+let cachedData = null;
+let lastCacheTime = 0;
+const CACHE_DURATION = 8 * 60 * 1000; // Cache for 8 minutes
+
+// Default fallback list of Cobalt servers
+const cobaltFallbackInstances = [
+  'https://api.cobalt.liubquanti.click/',
+  'https://cobaltapi.squair.xyz/',
+  'https://cobaltapi.kittycat.boo/',
+  'https://api.qwkuns.me/',
+  'https://grapefruit.clxxped.lol/',
+  'https://kitty.tame.gg/',
 ];
+
+/**
+ * Service detection helper
+ */
+function detectService(url) {
+  const clean = url.toLowerCase();
+  if (clean.includes('youtube.com') || clean.includes('youtu.be')) return 'youtube';
+  if (clean.includes('instagram.com')) return 'instagram';
+  if (clean.includes('tiktok.com')) return 'tiktok';
+  if (clean.includes('facebook.com') || clean.includes('fb.watch') || clean.includes('fb.com')) return 'facebook';
+  if (clean.includes('twitter.com') || clean.includes('x.com')) return 'twitter';
+  if (clean.includes('snapchat.com')) return 'snapchat';
+  if (clean.includes('reddit.com') || clean.includes('redd.it')) return 'reddit';
+  if (clean.includes('tumblr.com')) return 'tumblr';
+  if (clean.includes('pinterest.com') || clean.includes('pin.it')) return 'pinterest';
+  if (clean.includes('threads.net')) return 'twitter';
+  return 'facebook'; // fallback
+}
+
+/**
+ * Dynamic Working Instances Fetcher (queries cobalt.directory)
+ */
+async function getWorkingInstancesForService(service) {
+  const now = Date.now();
+  if (!cachedData || (now - lastCacheTime > CACHE_DURATION)) {
+    try {
+      console.log('[Directory] Refreshing working instances from cobalt.directory API...');
+      const response = await fetch('https://cobalt.directory/api/working?type=api', {
+        headers: { 
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+        },
+        signal: AbortSignal.timeout(6000)
+      });
+      if (response.ok) {
+        const json = await response.json();
+        if (json && json.data) {
+          cachedData = json.data;
+          lastCacheTime = now;
+          console.log('[Directory] Active instances cache updated successfully!');
+        }
+      }
+    } catch (e) {
+      console.error(`[Directory Error] Failed to fetch active instances: ${e.message}`);
+    }
+  }
+
+  if (cachedData && cachedData[service] && cachedData[service].length > 0) {
+    return cachedData[service].map(url => url.endsWith('/') ? url : `${url}/`);
+  }
+  
+  console.log(`[Directory] Using fallback instances list for service: ${service}`);
+  return cobaltFallbackInstances;
+}
 
 // Root path GET - sanity health check
 app.get('/', (req, res) => {
@@ -240,6 +301,10 @@ app.post('/', async (req, res) => {
     }
   }
 
+  // Detect service to get tested instances from directory API
+  const service = detectService(url);
+  const targetInstances = await getWorkingInstancesForService(service);
+
   // Build list of promises to run in parallel
   const extractionPromises = [];
 
@@ -251,8 +316,8 @@ app.post('/', async (req, res) => {
     })
   );
 
-  // 2. Add Cobalt instance promises
-  for (const instance of cobaltInstances) {
+  // 2. Add Cobalt instance promises for tested working servers
+  for (const instance of targetInstances) {
     extractionPromises.push(
       extractSingleCobalt(instance, url).then(res => {
         if (res) return res;
